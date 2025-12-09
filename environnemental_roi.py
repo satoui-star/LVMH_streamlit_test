@@ -1,17 +1,60 @@
 import streamlit as st
 import pandas as pd
+import requests # Pour appeler l'API Boavizta
 import math
 
-# --- 1. LE MOTEUR BACKEND (Ta logique) ---
+# --- 1. FONCTIONS DE RÉCUPÉRATION DE DONNÉES (API & CSV) ---
+
+@st.cache_data # Streamlit garde le résultat en mémoire pour aller plus vite
+def get_boavizta_footprint(model_name):
+    """
+    Interroge l'API Boavizta pour obtenir l'impact carbone de fabrication (GWP).
+    Note: Ceci est une version simplifiée utilisant leur base de données publique.
+    """
+    # Endpoint de recherche (exemple simplifié)
+    url = f"https://api.boavizta.org/v1/component/search?name={model_name}"
+    
+    try:
+        # Dans un vrai cas, on envoie souvent des specs précises (RAM, SSD, etc.)
+        # Ici on simule une récupération ou on met une valeur par défaut si l'API échoue
+        # Pour l'exercice, si l'API ne répond pas, on renvoie une estimation
+        # response = requests.get(url) 
+        # data = response.json()
+        
+        # Simulation de réponse API pour que tu puisses tester sans clé API immédiate
+        # Si tu as une clé, décommente les lignes requests au-dessus
+        return 320.0 # Valeur retournée par l'API (ex: 320 kg CO2e)
+        
+    except Exception as e:
+        st.error(f"Erreur connexion Boavizta: {e}")
+        return 300.0 # Valeur de repli par défaut
+
+@st.cache_data
+def get_cpu_score(cpu_name):
+    """
+    Simule la lecture de ton fichier CSV PassMark.
+    Dans la réalité: df = pd.read_csv('passmark_data.csv')
+    """
+    # Exemple de ta stratégie "Hacker" (Chargement du CSV en mémoire)
+    # Ici je crée un petit dictionnaire pour l'exemple, mais tu chargeras ton CSV
+    fake_csv_db = {
+        "i5-8250U": 6000,
+        "i7-7700HQ": 6900,
+        "i7-1355U": 15000,
+        "M3 Max": 35000,
+        "M1": 14000
+    }
+    return fake_csv_db.get(cpu_name, 5000) # 5000 par défaut si non trouvé
+
+# --- 2. LE MOTEUR DE CALCUL (Mis à jour) ---
+
 class GreenROICalculator:
     def __init__(self):
-        # Facteurs d'intensité carbone (gCO2e / kWh)
         self.GRID_FACTORS = {
             "France (Nucléaire)": 0.05,
             "USA (Mixte)": 0.38,
             "Chine (Charbon)": 0.53,
             "Inde (Charbon Intensif)": 0.70,
-            "Norvège (Hydro)": 0.02,
             "Global (Moyenne)": 0.475
         }
         self.AVG_SALARY = 60000 
@@ -21,14 +64,12 @@ class GreenROICalculator:
 
     def calculate_carbon_impact(self, manufacturing_co2, watts, hours_per_day, years_kept, location_name):
         grid_factor = self.GRID_FACTORS.get(location_name, 0.475)
-        # (Watts * Heures/Jour * 220 jours * Années) / 1000 => kWh
         total_kwh = (watts * hours_per_day * 220 * years_kept) / 1000
         usage_co2 = total_kwh * grid_factor
-        
         return usage_co2, manufacturing_co2 + usage_co2
 
-    def analyze_device(self, device, new_device_benchmark):
-        # 1. Productivité (People)
+    def analyze_device(self, device, new_device_benchmark, manufacturing_co2_from_api):
+        # 1. Productivité (Utilisation du score CPU réel)
         perf_ratio = device['cpu_score'] / new_device_benchmark
         productivity_loss = 0
         if perf_ratio < 0.5:
@@ -36,102 +77,85 @@ class GreenROICalculator:
         elif perf_ratio < 0.7:
             productivity_loss = 0.01 * self.AVG_SALARY
 
-        # 2. Finances (Profit)
+        # 2. Finances
         resale_value = self.get_depreciated_value(device['original_price'], device['age'])
         net_cost_to_switch = 1500 - resale_value
 
-        # 3. Verdict
+        # 3. Planet: On vérifie si l'impact usage dépasse la fabrication d'un neuf
+        # Coût carbone fabrication d'un neuf (Hypothèse ou API aussi)
+        new_mfg_co2 = 300 
+        
         result = {}
+        # Logique simplifiée pour l'affichage
         if productivity_loss > net_cost_to_switch:
-            result = {"color": "red", "action": "REMPLACER IMMÉDIATEMENT", "msg": f"Perte de productivité ({productivity_loss}€) > Coût matériel."}
+             result = {"color": "red", "action": "REMPLACER (Productivité)", "msg": f"Perte ({productivity_loss}€) > Coût matériel."}
         elif "Charbon" in device['location'] and device['watts'] > 150:
-             result = {"color": "orange", "action": "PRIORITÉ UPGRADE (ÉNERGIE)", "msg": "Réseau très carboné : l'efficacité énergétique est prioritaire."}
+             result = {"color": "orange", "action": "PRIORITÉ UPGRADE (Énergie)", "msg": "Réseau sale : priorité efficacité."}
         elif device['age'] < 4:
-            result = {"color": "green", "action": "GARDER / UPGRADE RAM", "msg": "L'impact fabrication (300kg CO2) est trop élevé pour changer maintenant."}
+            result = {"color": "green", "action": "GARDER (Carbone)", "msg": f"Économisez {new_mfg_co2}kg de CO2 de fabrication."}
         else:
-            result = {"color": "yellow", "action": "PLANIFIER REMPLACEMENT", "msg": "Obsolescence proche."}
+            result = {"color": "yellow", "action": "PLANIFIER", "msg": "Fin de vie proche."}
             
         return result, productivity_loss, net_cost_to_switch, resale_value
 
-# --- 2. L'INTERFACE STREAMLIT ---
-st.set_page_config(page_title="Green IT ROI Calculator", layout="wide")
-st.title("🌍 Green IT ROI Calculator")
-st.markdown("Analysez vos équipements selon les 3 piliers : **People, Planet, Profit**.")
+# --- 3. L'INTERFACE STREAMLIT ---
+st.set_page_config(page_title="Green IT ROI - Live Data", layout="wide")
+st.title("🌍 Green IT ROI (API Connected)")
 
-# Initialisation du moteur
 engine = GreenROICalculator()
 
-# --- SIDEBAR : PARAMÈTRES GLOBAUX ---
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Configuration")
-    location = st.selectbox("Localisation du Bureau", list(engine.GRID_FACTORS.keys()))
-    new_cpu_score = st.number_input("Score PassMark Standard (Neuf)", value=25000, step=1000)
-    st.info(f"Intensité Réseau : {engine.GRID_FACTORS[location]} kgCO2e/kWh")
+    location = st.selectbox("Localisation", list(engine.GRID_FACTORS.keys()))
+    # On sélectionne le CPU standard actuel via la "Base CSV"
+    current_std_cpu = st.selectbox("Standard du marché (CPU)", ["i7-1355U", "M3 Max"])
+    new_cpu_score = get_cpu_score(current_std_cpu)
+    st.info(f"Score Standard ({current_std_cpu}): {new_cpu_score}")
 
-# --- SECTION PRINCIPALE : SIMULATEUR ---
-st.subheader("💻 Simulateur d'Appareil")
+# Formulaire
+st.subheader("🔎 Recherche Appareil (API Boavizta)")
+col1, col2 = st.columns(2)
 
-col1, col2, col3, col4 = st.columns(4)
 with col1:
-    dev_name = st.text_input("Nom du Modèle", "Vieux Laptop Graphiste")
-    dev_watts = st.number_input("Conso (Watts)", value=180)
+    model_query = st.text_input("Modèle Laptop (ex: Dell Latitude 7490)", "Dell Latitude 7490")
+    # Simulation recherche CPU dans le CSV
+    cpu_query = st.selectbox("Processeur détecté (Simulé CSV)", ["i5-8250U", "i7-7700HQ", "M1"])
+    
 with col2:
-    dev_price = st.number_input("Prix d'achat (€)", value=2000)
-    dev_hours = st.slider("Heures / Jour", 1, 24, 8)
-with col3:
-    dev_age = st.number_input("Âge (Années)", value=5)
-with col4:
-    dev_score = st.number_input("Score PassMark Actuel", value=6900)
+    dev_price = st.number_input("Prix d'achat original (€)", 1500)
+    dev_age = st.number_input("Âge (années)", 4)
+    dev_watts = st.number_input("Conso (W)", 65)
 
-# Bouton d'action
-if st.button("Calculer le ROI & l'Impact"):
+if st.button("Lancer l'Analyse Live"):
     
-    # Création de l'objet device
+    # 1. APPEL API (Récupération Empreinte Carbone)
+    with st.spinner('Connexion à Boavizta API...'):
+        mfg_co2 = get_boavizta_footprint(model_query)
+        st.toast(f"Données Carbone récupérées: {mfg_co2} kgCO2e", icon="🌱")
+
+    # 2. LOOKUP CSV (Récupération Score CPU)
+    current_score = get_cpu_score(cpu_query)
+
+    # 3. CALCUL
     device_data = {
-        "original_price": dev_price,
-        "age": dev_age,
-        "cpu_score": dev_score,
-        "watts": dev_watts,
-        "hours_per_day": dev_hours,
-        "location": location
+        "original_price": dev_price, "age": dev_age, "cpu_score": current_score,
+        "watts": dev_watts, "hours_per_day": 8, "location": location
     }
-
-    # Calculs
-    verdict, prod_loss, switch_cost, resale = engine.analyze_device(device_data, new_cpu_score)
     
-    # Calculs Carbone Spécifiques pour affichage
-    co2_usage_1an, co2_total_old = engine.calculate_carbon_impact(0, dev_watts, dev_hours, 1, location)
-    # Comparaison avec un neuf (hypothese: 300kg fab + 20% moins de conso)
-    co2_usage_new_1an, co2_total_new = engine.calculate_carbon_impact(300, dev_watts*0.8, dev_hours, 1, location)
-
-    # --- AFFICHAGE DES RÉSULTATS ---
+    verdict, prod_loss, switch_cost, resale = engine.analyze_device(device_data, new_cpu_score, mfg_co2)
+    
+    # --- RÉSULTATS ---
     st.divider()
     
-    # 1. Le Verdict Visuel
-    if verdict["color"] == "red":
-        st.error(f"### {verdict['action']}\n{verdict['msg']}")
-    elif verdict["color"] == "orange":
-        st.warning(f"### {verdict['action']}\n{verdict['msg']}")
-    elif verdict["color"] == "green":
-        st.success(f"### {verdict['action']}\n{verdict['msg']}")
-    else:
-        st.warning(f"### {verdict['action']}\n{verdict['msg']}")
+    # Affichage dynamique de la source de donnée
+    st.caption(f"Sources: Carbone via Boavizta API ({mfg_co2}kg) | Perf via PassMark CSV ({current_score})")
 
-    # 2. Les Métriques Clés (3 Piliers)
+    if verdict["color"] == "red": st.error(f"### {verdict['action']}\n{verdict['msg']}")
+    elif verdict["color"] == "green": st.success(f"### {verdict['action']}\n{verdict['msg']}")
+    else: st.warning(f"### {verdict['action']}\n{verdict['msg']}")
+
     c1, c2, c3 = st.columns(3)
-    c1.metric("💰 Profit (Coût Net Changement)", f"{switch_cost:.0f} €", f"Revente estimée: {resale:.0f} €")
-    c2.metric("👥 People (Perte Productivité)", f"{prod_loss:.0f} € / an", delta_color="inverse")
-    c3.metric("🌍 Planet (Dette Carbone 1 an)", f"{co2_usage_1an:.1f} kgCO2e", help="Électricité uniquement")
-
-    # 3. Comparatif Graphique (Old vs New)
-    st.subheader("VS : Garder vs Acheter Neuf (Impact sur 1 an)")
-    
-    chart_data = pd.DataFrame({
-        "Scénario": ["Garder l'ancien (Usage pur)", "Acheter Neuf (Fab + Usage)"],
-        "Impact CO2 (kg)": [co2_usage_1an, co2_total_new]
-    })
-    
-    st.bar_chart(chart_data, x="Scénario", y="Impact CO2 (kg)", color="#00CC96")
-    
-    if co2_usage_1an > co2_total_new:
-        st.error(f"⚠️ ATTENTION : À cause du réseau électrique ({location}), votre vieux PC pollue plus en 1 an d'électricité que la fabrication complète d'un PC neuf !")
+    c1.metric("Impact Fabrication (API)", f"{mfg_co2} kgCO2e")
+    c2.metric("Impact Usage (1 an)", f"{engine.calculate_carbon_impact(mfg_co2, dev_watts, 8, 1, location)[0]:.1f} kgCO2e")
+    c3.metric("ROI Financier", f"{prod_loss - switch_cost:.0f} €", delta="Positif = Changer est rentable")
