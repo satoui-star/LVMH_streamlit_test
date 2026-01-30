@@ -288,7 +288,9 @@ def _render_sidebar() -> Tuple[str, int, bool]:
     # Advanced settings
     st.sidebar.markdown("---")
     n_chunks = st.sidebar.slider("Context Depth (Chunks)", 1, 5, 3)
-    show_sources = st.sidebar.checkbox("Show Sources", value=True)
+    
+    # Force sources to be always shown (Removed Checkbox)
+    show_sources = True 
     
     # Reset button
     if st.sidebar.button("🗑️ Reset Conversation"):
@@ -326,6 +328,14 @@ def _process_user_query(prompt, api_key, n_chunks, collection, model):
                 resp = generate_simple_response(prompt, chunks)
                 
             st.markdown(resp)
+            
+            # Display sources immediately for the current answer
+            # Since we removed the checkbox, we always show them here.
+            if chunks:
+                with st.expander("📚 View Source Text"):
+                    for s in chunks:
+                        st.text(f"...{s['text'][:200]}...")
+            
             return resp, chunks
 
 def chat_page():
