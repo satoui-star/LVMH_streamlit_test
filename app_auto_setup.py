@@ -129,25 +129,25 @@ def generate_simple_response(query: str, chunks: List[Dict]) -> str:
     return res
 
 def call_openai_api(query: str, chunks: List[Dict], api_key: str) -> str:
-    """Generates response using OpenAI. FIX: Uses custom httpx client."""
+    """Generates response using OpenAI. Captures Auth Errors."""
     try:
-        import openai
-        import httpx 
-    except ImportError:
-        return generate_simple_response(query, chunks)
+        import openai, httpx
+        
+        context = "\n\n".join([c['text'] for c in chunks])
+        messages = [
+            {"role": "system", "content": "You are an expert on Shakespeare's Othello."},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
+        ]
+        
+        client = openai.OpenAI(api_key=api_key, http_client=httpx.Client())
+        resp = client.chat.completions.create(
+            model="gpt-3.5-turbo", messages=messages, temperature=0.7
+        )
+        return resp.choices[0].message.content
 
-    context = "\n\n".join([c['text'] for c in chunks])
-    messages = [
-        {"role": "system", "content": "You are an expert on Shakespeare's Othello."},
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}
-    ]
-    
-    # FIX: Explicitly pass httpx.Client to handle proxy environments
-    client = openai.OpenAI(api_key=api_key, http_client=httpx.Client())
-    resp = client.chat.completions.create(
-        model="gpt-3.5-turbo", messages=messages, temperature=0.7
-    )
-    return resp.choices[0].message.content
+    except Exception as e:
+        st.warning(f"⚠️ OpenAI Error ({type(e).__name__}). Switching to basic mode.")
+        return generate_simple_response(query, chunks)
 
 def _render_home_content():
     """Helper: Renders the text content for homepage."""
@@ -205,6 +205,7 @@ def _process_user_query(prompt, api_key, n_chunks, collection, model):
         with st.spinner("Thinking..."):
             chunks = retrieve_relevant_chunks(prompt, collection, model, n_chunks)
             
+            # If key is provided, try OpenAI; it will fallback if invalid
             if api_key:
                 resp = call_openai_api(prompt, chunks, api_key)
             else:
