@@ -94,5 +94,5 @@ def main():
             with st.expander("Sources consultées (RAG)"): st.info(context)
             st.session_state.messages.append({"role": "assistant", "content": answer})
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
