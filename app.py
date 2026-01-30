@@ -6,9 +6,8 @@ This app provides a chat interface to ask questions about Shakespeare's Othello.
 import streamlit as st
 import chromadb
 from sentence_transformers import SentenceTransformer
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-from typing import List, Dict, Tuple
+import requests
+from typing import List, Dict
 
 
 # Page configuration
@@ -29,26 +28,6 @@ def load_embedding_model():
         SentenceTransformer: Loaded embedding model
     """
     return SentenceTransformer('all-MiniLM-L6-v2')
-
-
-@st.cache_resource
-def load_llm_model(model_name: str):
-    """
-    Load and cache the language model for text generation.
-    
-    Args:
-        model_name: Name of the HuggingFace model to load
-        
-    Returns:
-        Tuple: (tokenizer, model)
-    """
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None
-    )
-    return tokenizer, model
 
 
 @st.cache_resource
@@ -97,57 +76,71 @@ def retrieve_relevant_chunks(query: str, collection, embedding_model, n_results:
     return relevant_chunks
 
 
-def generate_response(query: str, context_chunks: List[Dict], tokenizer, model) -> str:
+def generate_simple_response(query: str, context_chunks: List[Dict]) -> str:
     """
-    Generate a response using the LLM with retrieved context.
+    Generate a simple response by summarizing the retrieved context.
+    This is a fallback when LLM is not available.
     
     Args:
         query: User's question
         context_chunks: Relevant text chunks from Othello
-        tokenizer: HuggingFace tokenizer
-        model: HuggingFace language model
+        
+    Returns:
+        str: Response with context
+    """
+    if not context_chunks:
+        return "I couldn't find relevant information in Othello to answer your question."
+    
+    response = f"Based on the text of Othello, here are the most relevant passages:\n\n"
+    
+    for i, chunk in enumerate(context_chunks, 1):
+        response += f"**Passage {i}:**\n{chunk['text'][:400]}...\n\n"
+    
+    response += "\nThese passages from Othello should help answer your question about: " + query
+    
+    return response
+
+
+def call_openai_api(query: str, context_chunks: List[Dict], api_key: str) -> str:
+    """
+    Call OpenAI API to generate a response with the retrieved context.
+    
+    Args:
+        query: User's question
+        context_chunks: Relevant text chunks from Othello
+        api_key: OpenAI API key
         
     Returns:
         str: Generated response
     """
+    import openai
+    
     # Prepare context from retrieved chunks
     context = "\n\n".join([chunk['text'] for chunk in context_chunks])
     
     # Create prompt with context and question
-    prompt = f"""Based on the following excerpts from Shakespeare's Othello, answer the question.
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant that answers questions about Shakespeare's Othello based on provided text excerpts."},
+        {"role": "user", "content": f"""Based on the following excerpts from Shakespeare's Othello, answer the question.
 
 Context from Othello:
 {context}
 
 Question: {query}
 
-Answer based on the context above:"""
+Please provide a clear, concise answer based only on the context above."""}
+    ]
     
-    # Tokenize and generate
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024)
+    # Call OpenAI API
+    client = openai.OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        max_tokens=300,
+        temperature=0.7
+    )
     
-    # Move to same device as model
-    if torch.cuda.is_available():
-        inputs = {k: v.to(model.device) for k, v in inputs.items()}
-    
-    # Generate response
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=200,
-            temperature=0.7,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id
-        )
-    
-    # Decode response
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Extract only the answer part (remove the prompt)
-    answer = response[len(prompt):].strip()
-    
-    return answer
+    return response.choices[0].message.content
 
 
 def homepage():
@@ -162,7 +155,7 @@ def homepage():
     st.write("""
     This intelligent chatbot allows you to explore Shakespeare's **Othello** through 
     natural language questions. Using advanced AI technology, it retrieves relevant 
-    passages from the play and generates contextual answers.
+    passages from the play and provides contextual answers.
     """)
     
     # Features section
@@ -174,7 +167,7 @@ def homepage():
         st.write("Finds the most relevant passages from Othello based on your question.")
         
         st.subheader("🤖 AI-Powered Responses")
-        st.write("Generates accurate answers using state-of-the-art language models.")
+        st.write("Generates accurate answers using retrieved context.")
     
     with col2:
         st.subheader("📖 Source Citations")
@@ -187,9 +180,9 @@ def homepage():
     st.header("🚀 How to Use")
     st.write("""
     1. Navigate to the **Chat** page using the sidebar
-    2. Select your preferred language model
+    2. (Optional) Enter your OpenAI API key for enhanced responses
     3. Type your question about Othello in the chat input
-    4. View the AI-generated response along with source citations
+    4. View the response along with source citations
     5. Continue the conversation with follow-up questions
     """)
     
@@ -214,23 +207,23 @@ def chat_page():
     """
     st.title("💬 Chat with Othello")
     
-    # Sidebar for model selection
+    # Sidebar for settings
     st.sidebar.header("⚙️ Settings")
     
-    # Model selection
-    model_options = {
-        "TinyLlama (Fast, Low Memory)": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-        "Phi-2 (Balanced)": "microsoft/phi-2",
-        "Mistral-7B (High Quality, Requires GPU)": "mistralai/Mistral-7B-Instruct-v0.1"
-    }
-    
-    selected_model_name = st.sidebar.selectbox(
-        "Choose Language Model",
-        options=list(model_options.keys()),
-        index=0
+    # API Key input (optional)
+    st.sidebar.subheader("OpenAI API (Optional)")
+    api_key = st.sidebar.text_input(
+        "API Key",
+        type="password",
+        help="Enter your OpenAI API key for better responses. Leave empty to use basic mode."
     )
     
-    selected_model = model_options[selected_model_name]
+    use_openai = len(api_key) > 0
+    
+    if use_openai:
+        st.sidebar.success("✅ Using OpenAI API")
+    else:
+        st.sidebar.info("ℹ️ Using basic mode (context only)")
     
     # Number of context chunks
     n_chunks = st.sidebar.slider(
@@ -238,7 +231,7 @@ def chat_page():
         min_value=1,
         max_value=5,
         value=3,
-        help="More chunks provide more context but may slow down responses"
+        help="More chunks provide more context"
     )
     
     # Show sources toggle
@@ -246,6 +239,20 @@ def chat_page():
     
     st.sidebar.markdown("---")
     st.sidebar.info("💡 Tip: Start with a simple question about Othello!")
+    
+    # Check if database exists
+    try:
+        client = get_chromadb_client()
+        collection = client.get_collection("othello_collection")
+    except Exception as e:
+        st.error(f"""
+        ❌ **Vector database not found!**
+        
+        Please run `python generate_vector_db.py` first to create the database.
+        
+        Error details: {str(e)}
+        """)
+        return
     
     # Initialize session state for chat history
     if 'messages' not in st.session_state:
@@ -275,11 +282,8 @@ def chat_page():
         with st.chat_message("assistant"):
             with st.spinner("Searching Othello and generating response..."):
                 try:
-                    # Load models and database
+                    # Load embedding model
                     embedding_model = load_embedding_model()
-                    tokenizer, llm_model = load_llm_model(selected_model)
-                    client = get_chromadb_client()
-                    collection = client.get_collection("othello_collection")
                     
                     # Retrieve relevant chunks
                     relevant_chunks = retrieve_relevant_chunks(
@@ -290,7 +294,14 @@ def chat_page():
                     )
                     
                     # Generate response
-                    response = generate_response(prompt, relevant_chunks, tokenizer, llm_model)
+                    if use_openai:
+                        try:
+                            response = call_openai_api(prompt, relevant_chunks, api_key)
+                        except Exception as e:
+                            st.warning(f"OpenAI API error: {str(e)}. Falling back to basic mode.")
+                            response = generate_simple_response(prompt, relevant_chunks)
+                    else:
+                        response = generate_simple_response(prompt, relevant_chunks)
                     
                     # Display response
                     st.markdown(response)
@@ -311,7 +322,7 @@ def chat_page():
                     })
                     
                 except Exception as e:
-                    error_msg = f"❌ Error: {str(e)}\n\nPlease ensure you have run `generate_vector_db.py` first!"
+                    error_msg = f"❌ Error: {str(e)}"
                     st.error(error_msg)
                     st.session_state.messages.append({
                         "role": "assistant",
